@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Exploit Chain Mapper — Cyber Telemetry Center</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23060a08'/><path d='M50 15 L80 30 L80 60 C80 75 50 88 50 88 C50 88 20 75 20 60 L20 30 Z' fill='none' stroke='%2300ff66' stroke-width='6'/></svg>">
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700;800&family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
+  
+  <!-- Chart.js for Cyber Visualizations -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  
+  <!-- Cytoscape.js for Interactive Visual Attack Graphs (PDF Spec) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+  
+  <!-- Cyber Style Sheet -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="app-container">
+  
+  <!-- TOP NAVIGATION & CYBER TELEMETRY HEADER -->
+  <header class="cyber-header">
+    <div class="brand-section">
+      <div class="brand-logo-hex">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+        </svg>
+      </div>
+      <div class="brand-title-wrap">
+        <div class="brand-name">
+          AI EXPLOIT CHAIN MAPPER
+          <span class="brand-badge">PHASE 3–6</span>
+        </div>
+        <div class="brand-sub">AUTOMATED RECON → 4 SCANNERS → 15 EXPLOIT CHAINS → AI ANALYSIS</div>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <!-- Target Selector -->
+      <div class="target-select-wrapper">
+        <span class="target-label">TARGET:</span>
+        <select id="target-select" class="target-select">
+          <option value="">Loading targets...</option>
+        </select>
+        <button id="btn-new-target" class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;">+ Target</button>
+      </div>
+
+      <!-- Action Buttons -->
+      <button id="btn-start-scan" class="btn btn-primary">Launch Scan</button>
+      <button id="btn-demo-flight" class="btn btn-demo" title="Run simulated scan with 15 exploit chains">Demo Flight</button>
+
+      <!-- API Online Pill (Clickable to configure) -->
+      <div class="api-status-pill" onclick="configureApiUrl()" style="cursor: pointer;" title="Click to configure or view API host URL">
+        <div id="api-status-dot" class="status-dot offline"></div>
+        <span id="api-status-text">CONNECTING...</span>
+      </div>
+
+      <!-- Audio & Utilities -->
+      <button id="btn-audio-toggle" class="btn btn-icon" title="Toggle cyber sound telemetry">
+        <span id="audio-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          </svg>
+        </span>
+      </button>
+    </div>
+  </header>
+
+  <!-- OVERALL RISK & TARGET SCORE BANNER (PDF §7.1) -->
+  <section class="risk-banner">
+    <div class="risk-score-display">
+      <div class="risk-gauge-circle">
+        <div id="risk-score-val" class="risk-gauge-value">0.0</div>
+        <div class="risk-gauge-label">RISK / 100</div>
+      </div>
+
+      <div class="risk-info-wrap">
+        <h2>
+          <span id="active-domain-name">No Target Selected</span>
+          <span id="target-priority-badge" class="priority-pill P4">P4 PRIORITY</span>
+          <span id="active-target-id" class="brand-badge">#--</span>
+        </h2>
+        <div class="risk-meta">
+          <span id="active-scan-id">Scan #--</span>
+          <span>·</span>
+          <span id="risk-breakdown-text">0 Actionable Findings · 0 Exploit Chains Inferred</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="pipeline-telemetry-meta">
+      <span id="scan-status-badge" class="scan-status-badge queued">IDLE</span>
+    </div>
+  </section>
+
+  <!-- METRICS & KEY STATS GRID -->
+  <section class="metrics-grid">
+    <div class="stat-card">
+      <div class="stat-title">Subdomains</div>
+      <div id="stat-subdomains-count" class="stat-value">0</div>
+      <div id="stat-subdomains-subtext" class="stat-subtext">Subfinder + Amass + Assetfinder</div>
+    </div>
+
+    <div class="stat-card">
+      <div class="stat-title">Live HTTP Hosts</div>
+      <div id="stat-hosts-count" class="stat-value">0</div>
+      <div id="stat-hosts-subtext" class="stat-subtext">httpx & Tech Fingerprints</div>
+    </div>
+
+    <div class="stat-card">
+      <div class="stat-title">Endpoints (Categorized)</div>
+      <div id="stat-endpoints-count" class="stat-value">0</div>
+      <div id="stat-endpoints-subtext" class="stat-subtext">auth · api · admin · upload</div>
+    </div>
+
+    <div class="stat-card">
+      <div class="stat-title">Multi-Scanner Findings</div>
+      <div id="stat-findings-count" class="stat-value" style="color: var(--sev-critical);">0</div>
+      <div id="stat-findings-subtext" class="stat-subtext">Nuclei · Content · GitLeaks</div>
+    </div>
+
+    <div class="stat-card chain-card-metric">
+      <div class="stat-title">Inferred Exploit Chains</div>
+      <div id="stat-chains-count" class="stat-value" style="color: var(--cyber-cyan);">0</div>
+      <div id="stat-chains-subtext" class="stat-subtext">15 Expert Rule Patterns</div>
+    </div>
+  </section>
+
+  <!-- MAIN WORKSPACE & DATA TABS -->
+  <main class="workspace-container">
+    <nav class="tabs-navigation">
+      <button class="tab-btn active" data-tab="overview">
+        Overview
+      </button>
+      <button class="tab-btn" data-tab="attack-paths">
+        Attack Paths & Chains
+        <span id="tab-badge-chains" class="tab-badge" style="background: var(--cyber-cyan); color: #000;">0</span>
+      </button>
+      <button class="tab-btn" data-tab="findings">
+        Findings (Multi-Scanner)
+        <span id="tab-badge-findings" class="tab-badge" style="background: var(--sev-critical); color: #fff;">0</span>
+      </button>
+      <button class="tab-btn" data-tab="assets">
+        Assets & Endpoints
+        <span id="tab-badge-assets" class="tab-badge">0</span>
+      </button>
+      <button class="tab-btn" data-tab="analytics">
+        Analytics
+      </button>
+      <button class="tab-btn" data-tab="reports">
+        Reports
+      </button>
+    </nav>
+
+    <!-- TAB 1: OVERVIEW -->
+    <div id="tab-overview" class="tab-pane active">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; margin-bottom: 24px;">
+        <!-- Severity Donut -->
+        <div class="panel-card" style="padding: 20px;">
+          <div class="toolbar-title" style="margin-bottom: 12px;">
+            <span>VULNERABILITY SEVERITY DISTRIBUTION</span>
+          </div>
+          <div style="height: 220px; position: relative;">
+            <canvas id="chart-severity"></canvas>
+          </div>
+        </div>
+
+        <!-- AI Analysis & ML Engines Card (PDF §7.1) -->
+        <div class="panel-card" style="padding: 20px;">
+          <div class="toolbar-title" style="margin-bottom: 12px;">
+            <span>AI & ML INTELLIGENCE ENGINES</span>
+          </div>
+          <div style="font-family: var(--font-mono); font-size: 12px; line-height: 1.8; color: var(--text-main);">
+            <div>• <strong>Exploit Chain Mapper:</strong> <span style="color: var(--neon-green);">15 Rule Patterns Active</span></div>
+            <div>• <strong>ML Model #1 (Severity):</strong> <span style="color: var(--cyber-cyan);">TF-IDF + LogReg (20k NVD CVEs)</span></div>
+            <div>• <strong>ML Model #2 (FP Classifier):</strong> <span style="color: var(--cyber-cyan);">98.2% Accuracy (13k Templates)</span></div>
+            <div>• <strong>ML Model #3 (Exploitability):</strong> <span style="color: var(--cyber-cyan);">EPSS-Labelled (11.4k CVEs)</span></div>
+            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-green); display: flex; justify-content: space-between;">
+              <span id="overview-actionable-badge" class="badge-validity actionable">0 Actionable Issues</span>
+              <span id="overview-informational-badge" class="badge-validity informational">0 Informational Noise</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Integrated Real Tools & Engines -->
+        <div class="panel-card" style="padding: 20px;">
+          <div class="toolbar-title" style="margin-bottom: 12px;">
+            <span>REAL RECON & SCANNING ENGINES</span>
+          </div>
+          <div id="tools-status-list" style="font-family: var(--font-mono); font-size: 11px; line-height: 1.9; color: var(--text-main);">
+            <div>• <strong>Subdomain Recon:</strong> <span style="color: var(--neon-green);">Passive CT (crt.sh) + Socket DNS</span></div>
+            <div>• <strong>Live Host Prober:</strong> <span style="color: var(--neon-green);">Concurrent SSL/TLS & Tech Fingerprinter</span></div>
+            <div>• <strong>Endpoint Discovery:</strong> <span style="color: var(--neon-green);">Wayback Machine CDX API</span></div>
+            <div>• <strong>4-Scanner Layer:</strong> <span style="color: var(--neon-green);">Content + Secrets + CORS + Nuclei</span></div>
+            <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-green); font-size: 10px; color: var(--text-dim);">
+              Dual-Engine: CLI Binaries & Native Python Active
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent Scan Runs -->
+      <div class="panel-card">
+        <div class="panel-toolbar">
+          <div class="toolbar-title">
+            <span>RECENT SCAN RUNS & TARGET HISTORY</span>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="cyber-table">
+            <thead>
+              <tr>
+                <th>Scan ID</th>
+                <th>Target Domain</th>
+                <th>Status</th>
+                <th>Priority</th>
+                <th>Risk Score</th>
+                <th>Chains</th>
+                <th>Findings</th>
+                <th style="text-align: right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="table-recent-scans-body">
+              <tr>
+                <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 30px;">
+                  Loading scans...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: ATTACK PATHS & EXPLOIT CHAINS (PDF §7.2) -->
+    <div id="tab-attack-paths" class="tab-pane">
+      <!-- Interactive Cytoscape Graph -->
+      <div class="cytoscape-card">
+        <div class="panel-toolbar">
+          <div class="toolbar-title">
+            <span>INTERACTIVE CYTOSCAPE.JS ATTACK GRAPH (TARGET → VULNERABILITIES → CHAINS → IMPACT)</span>
+          </div>
+          <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="fitCytoscapeGraph()">Re-center Graph</button>
+        </div>
+        <div id="cy-attack-graph"></div>
+      </div>
+
+      <!-- Inferred Exploit Chains Cards -->
+      <div class="toolbar-title" style="margin: 16px 0 10px;">
+        <span>INFERRED MULTI-STEP EXPLOIT CHAINS (<span id="chains-count-label">0</span> DETECTED)</span>
+      </div>
+      <div id="exploit-chains-list" class="chain-cards-container"></div>
+    </div>
+
+    <!-- TAB 3: FINDINGS (MULTI-SCANNER) (PDF §7.3) -->
+    <div id="tab-findings" class="tab-pane">
+      <div class="panel-card">
+        <div class="panel-toolbar">
+          <div class="toolbar-title">
+            <span>MULTI-SCANNER FINDINGS CATALOG</span>
+          </div>
+          <div class="toolbar-search-wrap" style="display: flex; align-items: center; background: var(--bg-void); border: 1px solid var(--border-green); padding: 6px 12px; border-radius: 6px; width: 300px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-dim); flex-shrink: 0;">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+            <input type="text" id="filter-findings" class="search-input" placeholder="Filter findings, template, severity..." style="background: transparent; border: none; color: #fff; font-family: var(--font-mono); margin-left: 8px; outline: none; width: 100%;">
+          </div>
+        </div>
+        <div style="padding: 20px;" id="findings-container"></div>
+      </div>
+    </div>
+
+    <!-- TAB 4: ASSETS & CATEGORIZED ENDPOINTS -->
+    <div id="tab-assets" class="tab-pane">
+      <!-- Live Hosts -->
+      <div class="panel-card">
+        <div class="panel-toolbar">
+          <div class="toolbar-title">
+            <span>LIVE HTTP HOSTS & TECH FINGERPRINTS (HTTPX)</span>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="cyber-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Live URL</th>
+                <th>HTTP Status</th>
+                <th>Page Title</th>
+                <th>Detected Tech Stack</th>
+              </tr>
+            </thead>
+            <tbody id="table-hosts-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Categorized Endpoints -->
+      <div class="panel-card">
+        <div class="panel-toolbar">
+          <div class="toolbar-title">
+            <span>CATEGORIZED ENDPOINTS & SURFACE SIGNALS (AUTH / API / ADMIN / UPLOAD)</span>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="cyber-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Endpoint URL</th>
+                <th>Category</th>
+                <th>Source Tool</th>
+                <th style="text-align: right;">Copy</th>
+              </tr>
+            </thead>
+            <tbody id="table-endpoints-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: ANALYTICS -->
+    <div id="tab-analytics" class="tab-pane">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px;">
+        <div class="panel-card" style="padding: 20px;">
+          <div class="toolbar-title" style="margin-bottom: 12px;">SCANNER SOURCE ATTRIBUTION</div>
+          <div style="height: 220px; position: relative;">
+            <canvas id="chart-sources"></canvas>
+          </div>
+        </div>
+        <div class="panel-card" style="padding: 20px;">
+          <div class="toolbar-title" style="margin-bottom: 12px;">EXPLOITABILITY RATING (EPSS)</div>
+          <div style="height: 220px; position: relative;">
+            <canvas id="chart-exploitability"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 6: REPORTS (PDF §8) -->
+    <div id="tab-reports" class="tab-pane">
+      <div class="panel-card" style="padding: 24px;">
+        <h3 style="font-family: var(--font-display); font-size: 16px; margin-bottom: 8px;">AI EXPLOIT CHAIN MAPPER REPORT CENTER</h3>
+        <p style="color: var(--text-muted); font-size: 12px; margin-bottom: 20px;">Generate submission-ready security assessment reports including executive summary, 15-chain analysis, and remediation actions.</p>
+        <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+          <button id="btn-export-markdown" class="btn btn-primary">Download Markdown Report (.md)</button>
+          <button id="btn-export-json" class="btn btn-secondary">Export Full JSON Database (.json)</button>
+          <button class="btn btn-secondary" onclick="window.print()">Print / Save as PDF</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- FLOATING AI ASSISTANT CHAT WIDGET (PDF §6.5 & §7) -->
+  <div class="floating-chat-container">
+    <div id="chat-window-drawer" class="chat-window-drawer">
+      <div class="chat-header">
+        <div class="chat-title">
+          <span>AI SECURITY ASSISTANT</span>
+        </div>
+        <button id="btn-close-chat" class="modal-close" style="font-size: 14px;">✕</button>
+      </div>
+      <div id="chat-messages-body" class="chat-messages-body">
+        <div class="chat-msg bot">
+          Hello! I am your AI Exploit Chain security assistant. I have full context on your active target, vulnerabilities, and inferred exploit chains. Ask me anything!
+        </div>
+      </div>
+      <div class="chat-input-row">
+        <input type="text" id="input-chat-msg" class="chat-input" placeholder="Ask about risks, chains, remediation..." autocomplete="off">
+        <button id="btn-send-chat" class="btn btn-primary" style="padding: 6px 12px;">Send</button>
+      </div>
+    </div>
+    <button id="btn-chat-trigger" class="chat-trigger-btn" title="Open AI Security Assistant">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+      </svg>
+    </button>
+  </div>
+
+</div>
+
+<!-- MODAL: REGISTER NEW TARGET -->
+<div id="modal-new-target" class="modal-backdrop">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 class="modal-title">REGISTER AUTHORIZED TARGET</h3>
+      <button class="modal-close">✕</button>
+    </div>
+    <form id="form-create-target">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Target Domain or Host:Port</label>
+          <input type="text" id="input-target-domain" class="form-input" placeholder="e.g. target.com or staging.corp:8443" required autocomplete="off">
+          <div style="font-size: 11px; color: var(--text-dim); margin-top: 6px;">
+            Scope guardrail: Only enter authorized domains or lab environments in scope.
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Register Target</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- MODAL: LAUNCH NEW SCAN -->
+<div id="modal-new-scan" class="modal-backdrop">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 class="modal-title">LAUNCH PIPELINE & CHAIN INFERENCE</h3>
+      <button class="modal-close">✕</button>
+    </div>
+    <form id="form-launch-scan">
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">Scan Execution Mode</label>
+          <select id="input-scan-mode" class="form-input">
+            <option value="real">Real Multi-Scanner Pipeline (Nuclei + Content + GitLeaks)</option>
+            <option value="demo">Demo Flight Simulation (15 Inferred Chains)</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary modal-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Start Pipeline</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- MODAL: SAFE PAYLOAD VALIDATION & TEST CASE (PDF §6.6) -->
+<div id="modal-safe-testcase" class="modal-backdrop">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 id="modal-testcase-title" class="modal-title">SAFE VALIDATION TEST CASE</h3>
+      <button class="modal-close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">
+        Non-destructive, safe validation command (no auto-exploitation payload):
+      </div>
+      <pre id="modal-testcase-content" style="background: var(--bg-void); border: 1px solid var(--border-green); border-radius: 6px; padding: 12px; font-family: var(--font-mono); font-size: 12px; color: var(--neon-green); overflow-x: auto; white-space: pre-wrap;"></pre>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-primary modal-cancel">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Core Script -->
+<script src="js/app.js"></script>
+</body>
+</html>

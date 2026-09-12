@@ -1,0 +1,45 @@
+# Python Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+backend/venv/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local Environment Variables & Secrets
+.env
+!.env.example
+backend/.env
+!backend/.env.example
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+backend/recon_mapper.db
+recon_mapper.db
+
+# Logs
+backend/logs/*.log
+logs/
+*.log
+
+# CLI Executables & Binaries
+backend/bin/
+bin/
+*.exe
+*.zip
+
+# IDE & OS Metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
