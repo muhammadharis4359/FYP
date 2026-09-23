@@ -5,10 +5,12 @@
 
 // Global State
 const savedApiUrl = localStorage.getItem('recon_api_url');
+const savedVpsTerminalUrl = localStorage.getItem('vps_terminal_url');
 const state = {
   apiBaseUrl: savedApiUrl || ((window.location.protocol.startsWith('http') && window.location.port === '8000') 
     ? window.location.origin 
     : 'http://127.0.0.1:8000'),
+  vpsTerminalUrl: savedVpsTerminalUrl || 'http://213.199.43.129:7681',
   isOnline: false,
   targets: [],
   selectedTargetId: null,
@@ -273,6 +275,9 @@ function setupEventListeners() {
   // Reports
   document.getElementById('btn-export-markdown')?.addEventListener('click', exportReportMarkdown);
   document.getElementById('btn-export-json')?.addEventListener('click', exportReportJson);
+
+  // Live VPS Terminal Controls
+  initVpsTerminal();
 }
 
 // Switch Tab
@@ -287,7 +292,143 @@ function switchTab(tabId) {
 
   if (tabId === 'attack-paths') {
     setTimeout(renderCytoscapeAttackGraph, 100);
+  } else if (tabId === 'terminal') {
+    ensureTerminalLoaded();
   }
+}
+
+// Live VPS Terminal Integration Functions
+function initVpsTerminal() {
+  const iframe = document.getElementById('vps-terminal-iframe');
+  const routeSelect = document.getElementById('terminal-route-preset');
+  const urlLabel = document.getElementById('terminal-current-url-label');
+  const hostPill = document.getElementById('terminal-host-pill');
+
+  // Sync initial URL
+  if (iframe && state.vpsTerminalUrl) {
+    iframe.src = state.vpsTerminalUrl;
+    if (urlLabel) urlLabel.textContent = `Target: ${state.vpsTerminalUrl}`;
+    if (hostPill) {
+      try {
+        const u = new URL(state.vpsTerminalUrl);
+        hostPill.textContent = u.host || state.vpsTerminalUrl;
+      } catch (e) {
+        hostPill.textContent = state.vpsTerminalUrl;
+      }
+    }
+  }
+
+  // Route Preset Selector
+  routeSelect?.addEventListener('change', (e) => {
+    cyberAudio.click();
+    const val = e.target.value;
+    if (val === 'direct') {
+      setTerminalUrl('http://213.199.43.129:7681');
+    } else if (val === 'nginx') {
+      setTerminalUrl('/terminal/');
+    } else if (val === 'custom') {
+      configureTerminalUrl();
+    }
+  });
+
+  // Buttons
+  document.getElementById('btn-config-terminal')?.addEventListener('click', () => {
+    cyberAudio.click();
+    configureTerminalUrl();
+  });
+
+  document.getElementById('btn-reload-terminal')?.addEventListener('click', () => {
+    cyberAudio.click();
+    reloadTerminalIframe();
+  });
+
+  document.getElementById('btn-popout-terminal')?.addEventListener('click', () => {
+    cyberAudio.click();
+    window.open(state.vpsTerminalUrl, '_blank', 'noopener,noreferrer');
+  });
+
+  document.getElementById('btn-fullscreen-terminal')?.addEventListener('click', () => {
+    cyberAudio.click();
+    toggleTerminalFullscreen();
+  });
+
+  // Quick Command Buttons
+  document.getElementById('qcmd-logs')?.addEventListener('click', () => copyToClipboard('journalctl -u ttyd -f'));
+  document.getElementById('qcmd-htop')?.addEventListener('click', () => copyToClipboard('htop'));
+  document.getElementById('qcmd-port')?.addEventListener('click', () => copyToClipboard('ss -tulpn | grep 7681'));
+  document.getElementById('qcmd-restart')?.addEventListener('click', () => copyToClipboard('sudo systemctl restart ttyd.service'));
+}
+
+function ensureTerminalLoaded() {
+  const iframe = document.getElementById('vps-terminal-iframe');
+  if (iframe && (!iframe.src || iframe.src === 'about:blank')) {
+    iframe.src = state.vpsTerminalUrl;
+  }
+}
+
+function setTerminalUrl(url) {
+  state.vpsTerminalUrl = url;
+  localStorage.setItem('vps_terminal_url', url);
+  const iframe = document.getElementById('vps-terminal-iframe');
+  const urlLabel = document.getElementById('terminal-current-url-label');
+  const hostPill = document.getElementById('terminal-host-pill');
+
+  if (iframe) iframe.src = url;
+  if (urlLabel) urlLabel.textContent = `Target: ${url}`;
+  if (hostPill) {
+    try {
+      const u = new URL(url);
+      hostPill.textContent = u.host || url;
+    } catch (e) {
+      hostPill.textContent = url;
+    }
+  }
+}
+
+function configureTerminalUrl() {
+  const current = state.vpsTerminalUrl || 'http://213.199.43.129:7681';
+  const custom = prompt('Enter VPS Web Terminal URL or Endpoint:', current);
+  if (custom !== null && custom.trim()) {
+    setTerminalUrl(custom.trim());
+  }
+}
+
+function reloadTerminalIframe() {
+  const iframe = document.getElementById('vps-terminal-iframe');
+  if (iframe) {
+    iframe.src = state.vpsTerminalUrl;
+  }
+}
+
+function toggleTerminalFullscreen() {
+  const panel = document.querySelector('.terminal-panel-card');
+  const btn = document.getElementById('btn-fullscreen-terminal');
+  if (panel) {
+    panel.classList.toggle('fullscreen');
+    const isFs = panel.classList.contains('fullscreen');
+    if (btn) btn.textContent = isFs ? '✕ Exit Fullscreen' : '⛶ Fullscreen';
+  }
+}
+
+window.copyToClipboard = (text) => {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(() => {
+      cyberAudio.click();
+      alert(`Copied to clipboard:\n${text}`);
+    }).catch(() => fallbackCopyText(text));
+  } else {
+    fallbackCopyText(text);
+  }
+};
+
+function fallbackCopyText(text) {
+  const tempInput = document.createElement('textarea');
+  tempInput.value = text;
+  document.body.appendChild(tempInput);
+  tempInput.select();
+  document.execCommand('copy');
+  document.body.removeChild(tempInput);
+  alert(`Copied to clipboard:\n${text}`);
 }
 
 // Health Check

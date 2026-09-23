@@ -1004,3 +1004,103 @@ body::before {
   font-size: 13px;
   outline: none;
 }
+
+/* ==========================================================================
+   LIVE VPS WEB TERMINAL (TTYD EMBED)
+   ========================================================================== */
+.terminal-panel-card {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 270px);
+  min-height: 560px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-green);
+  box-shadow: var(--shadow-card), 0 0 20px rgba(0, 255, 102, 0.05);
+}
+
+.terminal-toolbar {
+  padding: 10px 16px;
+  background: rgba(6, 10, 8, 0.95);
+  border-bottom: 1px solid var(--border-green);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.terminal-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.terminal-frame-wrapper {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  background: #000000;
+  position: relative;
+  overflow: hidden;
+}
+
+.vps-terminal-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #000000;
+  display: block;
+}
+
+.terminal-bottom-bar {
+  padding: 8px 16px;
+  background: rgba(4, 8, 5, 0.92);
+  border-top: 1px solid var(--border-green);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.terminal-quick-cmds {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.quick-cmd-btn {
+  background: rgba(20, 83, 45, 0.35);
+  border: 1px solid var(--border-green);
+  color: var(--neon-green);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.quick-cmd-btn:hover {
+  background: rgba(0, 255, 102, 0.2);
+  border-color: var(--neon-green);
+  color: var(--text-pure);
+  box-shadow: 0 0 8px rgba(0, 255, 102, 0.3);
+}
+
+/* Fullscreen Mode */
+.terminal-panel-card.fullscreen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: 100vw;
+  max-height: 100vh;
+  z-index: 99999;
+  border-radius: 0;
+  border: none;
+}
+
