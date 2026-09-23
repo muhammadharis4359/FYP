@@ -17,6 +17,11 @@
   <!-- Cytoscape.js for Interactive Visual Attack Graphs (PDF Spec) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
   
+  <!-- xterm.js & Fit Addon for Native PTY WebSockets -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+  
   <!-- Cyber Style Sheet -->
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -366,15 +371,15 @@
       </div>
     </div>
 
-    <!-- TAB 7: LIVE VPS TERMINAL (TTYD EMBED) -->
+    <!-- TAB 7: LIVE VPS NATIVE TERMINAL (XTERM.JS + WEBSOCKET PTY) -->
     <div id="tab-terminal" class="tab-pane">
       <div class="panel-card terminal-panel-card">
         <!-- Terminal Controls Bar -->
         <div class="panel-toolbar terminal-toolbar">
           <div class="toolbar-title" style="display: flex; align-items: center; gap: 10px;">
-            <div class="status-dot" id="terminal-live-dot" style="background: var(--neon-green); box-shadow: 0 0 8px var(--neon-green);"></div>
-            <span>LIVE VPS TERMINAL (TTYD)</span>
-            <span class="brand-badge" id="terminal-host-pill" style="font-size: 11px; padding: 2px 8px;">213.199.43.129:7681</span>
+            <div class="status-dot offline" id="terminal-socket-dot" title="WebSocket Status"></div>
+            <span>LIVE VPS TERMINAL (XTERM.JS + PTY)</span>
+            <span class="brand-badge" id="terminal-host-pill" style="font-size: 11px; padding: 2px 8px;">213.199.43.129:7682</span>
           </div>
           
           <div class="terminal-toolbar-actions">
@@ -382,20 +387,24 @@
             <div class="terminal-preset-select" style="display: flex; align-items: center; gap: 6px;">
               <span style="font-size: 11px; font-family: var(--font-mono); color: var(--text-dim);">ROUTE:</span>
               <select id="terminal-route-preset" class="form-input" style="padding: 4px 8px; font-size: 11px; width: auto; height: 28px; background: var(--bg-void);">
-                <option value="direct">Direct Port (213.199.43.129:7681)</option>
-                <option value="nginx">Nginx Proxy (/terminal/)</option>
-                <option value="custom">Custom URL...</option>
+                <option value="direct">Direct WS (ws://213.199.43.129:7682/ws/terminal)</option>
+                <option value="nginx">Nginx Proxy (/ws/terminal)</option>
+                <option value="local">Local WS (ws://127.0.0.1:7682/ws/terminal)</option>
+                <option value="custom">Custom WebSocket URL...</option>
               </select>
             </div>
 
-            <button id="btn-config-terminal" class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" title="Configure VPS Terminal URL">
+            <button id="btn-config-terminal" class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" title="Configure WebSocket URL">
               ⚙ Config
             </button>
-            <button id="btn-reload-terminal" class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" title="Reload WebSocket Terminal Session">
+            <button id="btn-reload-terminal" class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" title="Reconnect Terminal Session">
               ↻ Reconnect
             </button>
-            <button id="btn-popout-terminal" class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" title="Open in New Window">
-              ↗ Pop Out
+            <button id="btn-clear-terminal" class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" title="Clear Terminal Screen">
+              ⌫ Clear
+            </button>
+            <button id="btn-view-reports" class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" title="View Session Execution Reports">
+              📄 Reports (<span id="reports-count-badge">0</span>)
             </button>
             <button id="btn-fullscreen-terminal" class="btn btn-primary" style="padding: 4px 10px; font-size: 11px;" title="Toggle Fullscreen">
               ⛶ Fullscreen
@@ -403,29 +412,22 @@
           </div>
         </div>
 
-        <!-- Terminal Embed Iframe Container -->
-        <div class="terminal-frame-wrapper" id="terminal-frame-container">
-          <iframe
-            id="vps-terminal-iframe"
-            src="http://213.199.43.129:7681"
-            title="VPS Web Terminal"
-            allow="clipboard-read; clipboard-write"
-            sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
-            class="vps-terminal-iframe"
-          ></iframe>
+        <!-- Native xterm.js Canvas Container -->
+        <div class="terminal-frame-wrapper" id="terminal-xterm-wrapper">
+          <div id="xterm-container" class="xterm-container"></div>
         </div>
 
         <!-- Bottom Quick Diagnostic Telemetry & Commands -->
         <div class="terminal-bottom-bar">
           <div class="terminal-quick-cmds">
-            <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); margin-right: 4px;">QUICK COMMANDS:</span>
-            <button class="quick-cmd-btn" id="qcmd-logs" title="Copy to clipboard">📋 journalctl -u ttyd -f</button>
-            <button class="quick-cmd-btn" id="qcmd-htop" title="Copy to clipboard">📋 htop</button>
-            <button class="quick-cmd-btn" id="qcmd-port" title="Copy to clipboard">📋 ss -tulpn | grep 7681</button>
-            <button class="quick-cmd-btn" id="qcmd-restart" title="Copy to clipboard">📋 systemctl restart ttyd</button>
+            <span style="font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); margin-right: 4px;">QUICK SEND:</span>
+            <button class="quick-cmd-btn" id="qcmd-reports" title="Send command to terminal">ls -la /var/log/dashboard-reports</button>
+            <button class="quick-cmd-btn" id="qcmd-htop" title="Send command to terminal">htop</button>
+            <button class="quick-cmd-btn" id="qcmd-port" title="Send command to terminal">ss -tulpn | grep 7682</button>
+            <button class="quick-cmd-btn" id="qcmd-restart" title="Send command to terminal">systemctl status terminal-bridge</button>
           </div>
           <div style="font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);" id="terminal-current-url-label">
-            Target: http://213.199.43.129:7681
+            Target: ws://213.199.43.129:7682/ws/terminal
           </div>
         </div>
       </div>
@@ -523,6 +525,30 @@
         Non-destructive, safe validation command (no auto-exploitation payload):
       </div>
       <pre id="modal-testcase-content" style="background: var(--bg-void); border: 1px solid var(--border-green); border-radius: 6px; padding: 12px; font-family: var(--font-mono); font-size: 12px; color: var(--neon-green); overflow-x: auto; white-space: pre-wrap;"></pre>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-primary modal-cancel">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: TERMINAL SESSION REPORTS -->
+<div id="modal-terminal-reports" class="modal-backdrop">
+  <div class="modal-dialog" style="max-width: 800px;">
+    <div class="modal-header">
+      <h3 class="modal-title">PERSISTENT TERMINAL SESSION REPORTS</h3>
+      <button class="modal-close">✕</button>
+    </div>
+    <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <span style="font-size: 12px; color: var(--text-muted);">
+          Execution metrics automatically captured from <code>/var/log/dashboard-reports/</code>
+        </span>
+        <button id="btn-refresh-reports-list" class="btn btn-secondary" style="padding: 3px 8px; font-size: 11px;">↻ Refresh</button>
+      </div>
+      <div id="terminal-reports-list-container">
+        <div style="text-align: center; color: var(--text-dim); padding: 20px;">Loading reports...</div>
+      </div>
     </div>
     <div class="modal-footer">
       <button type="button" class="btn btn-primary modal-cancel">Close</button>

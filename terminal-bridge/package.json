@@ -1,0 +1,20 @@
+{
+  "name": "vps-terminal-bridge",
+  "version": "1.0.0",
+  "description": "Native WebSocket PTY Bridge with xterm.js support and persistent session report logging",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "node-pty": "^1.0.2",
+    "uuid": "^9.0.1",
+    "ws": "^8.17.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -5,12 +5,16 @@
 
 // Global State
 const savedApiUrl = localStorage.getItem('recon_api_url');
-const savedVpsTerminalUrl = localStorage.getItem('vps_terminal_url');
+const savedVpsWsUrl = localStorage.getItem('vps_terminal_ws_url');
 const state = {
   apiBaseUrl: savedApiUrl || ((window.location.protocol.startsWith('http') && window.location.port === '8000') 
     ? window.location.origin 
     : 'http://127.0.0.1:8000'),
-  vpsTerminalUrl: savedVpsTerminalUrl || 'http://213.199.43.129:7681',
+  vpsTerminalWsUrl: savedVpsWsUrl || 'ws://213.199.43.129:7682/ws/terminal',
+  term: null,
+  fitAddon: null,
+  termSocket: null,
+  reports: [],
   isOnline: false,
   targets: [],
   selectedTargetId: null,
@@ -297,54 +301,121 @@ function switchTab(tabId) {
   }
 }
 
-// Live VPS Terminal Integration Functions
+// Live VPS Terminal Integration (xterm.js + Native WebSocket PTY)
 function initVpsTerminal() {
-  const iframe = document.getElementById('vps-terminal-iframe');
-  const routeSelect = document.getElementById('terminal-route-preset');
-  const urlLabel = document.getElementById('terminal-current-url-label');
-  const hostPill = document.getElementById('terminal-host-pill');
+  const container = document.getElementById('xterm-container');
+  if (!container) return;
 
-  // Sync initial URL
-  if (iframe && state.vpsTerminalUrl) {
-    iframe.src = state.vpsTerminalUrl;
-    if (urlLabel) urlLabel.textContent = `Target: ${state.vpsTerminalUrl}`;
-    if (hostPill) {
-      try {
-        const u = new URL(state.vpsTerminalUrl);
-        hostPill.textContent = u.host || state.vpsTerminalUrl;
-      } catch (e) {
-        hostPill.textContent = state.vpsTerminalUrl;
+  // Initialize xterm.js instance
+  if (!state.term && typeof Terminal !== 'undefined') {
+    state.term = new Terminal({
+      cursorBlink: true,
+      cursorStyle: 'block',
+      fontSize: 13,
+      lineHeight: 1.2,
+      fontFamily: '"Fira Code", "JetBrains Mono", Consolas, monospace',
+      theme: {
+        background: '#020503',
+        foreground: '#e2fded',
+        cursor: '#00ff66',
+        cursorAccent: '#000000',
+        selectionBackground: 'rgba(0, 255, 102, 0.3)',
+        black: '#0a110c',
+        red: '#ff0055',
+        green: '#00ff66',
+        yellow: '#facc15',
+        blue: '#00f0ff',
+        magenta: '#c084fc',
+        cyan: '#00f0ff',
+        white: '#ffffff',
+        brightBlack: '#4ade80',
+        brightGreen: '#39ff14',
       }
+    });
+
+    if (typeof FitAddon !== 'undefined' && FitAddon.FitAddon) {
+      state.fitAddon = new FitAddon.FitAddon();
+      state.term.loadAddon(state.fitAddon);
+    }
+
+    state.term.open(container);
+    if (state.fitAddon) {
+      setTimeout(() => state.fitAddon.fit(), 100);
+    }
+
+    // Keyboard stroke routing -> WebSocket
+    state.term.onData(data => {
+      if (state.termSocket && state.termSocket.readyState === WebSocket.OPEN) {
+        state.termSocket.send(data);
+      }
+    });
+
+    // Dynamic resize observer
+    const wrapper = document.getElementById('terminal-xterm-wrapper');
+    if (wrapper && window.ResizeObserver) {
+      const ro = new ResizeObserver(() => {
+        if (state.fitAddon && state.term) {
+          state.fitAddon.fit();
+          if (state.termSocket && state.termSocket.readyState === WebSocket.OPEN) {
+            state.termSocket.send(JSON.stringify({
+              type: 'resize',
+              cols: state.term.cols,
+              rows: state.term.rows
+            }));
+          }
+        }
+      });
+      ro.observe(wrapper);
     }
   }
 
+  // Connect WebSocket Bridge
+  connectTerminalWebSocket();
+
   // Route Preset Selector
+  const routeSelect = document.getElementById('terminal-route-preset');
   routeSelect?.addEventListener('change', (e) => {
     cyberAudio.click();
     const val = e.target.value;
+    const isHttps = window.location.protocol === 'https:';
+    const wsProto = isHttps ? 'wss:' : 'ws:';
+    
     if (val === 'direct') {
-      setTerminalUrl('http://213.199.43.129:7681');
+      setTerminalWsUrl('ws://213.199.43.129:7682/ws/terminal');
     } else if (val === 'nginx') {
-      setTerminalUrl('/terminal/');
+      const host = window.location.host;
+      setTerminalWsUrl(`${wsProto}//${host}/ws/terminal`);
+    } else if (val === 'local') {
+      setTerminalWsUrl('ws://127.0.0.1:7682/ws/terminal');
     } else if (val === 'custom') {
-      configureTerminalUrl();
+      configureTerminalWsUrl();
     }
   });
 
-  // Buttons
+  // Action Buttons
   document.getElementById('btn-config-terminal')?.addEventListener('click', () => {
     cyberAudio.click();
-    configureTerminalUrl();
+    configureTerminalWsUrl();
   });
 
   document.getElementById('btn-reload-terminal')?.addEventListener('click', () => {
     cyberAudio.click();
-    reloadTerminalIframe();
+    connectTerminalWebSocket(true);
   });
 
-  document.getElementById('btn-popout-terminal')?.addEventListener('click', () => {
+  document.getElementById('btn-clear-terminal')?.addEventListener('click', () => {
     cyberAudio.click();
-    window.open(state.vpsTerminalUrl, '_blank', 'noopener,noreferrer');
+    if (state.term) state.term.clear();
+  });
+
+  document.getElementById('btn-view-reports')?.addEventListener('click', () => {
+    cyberAudio.click();
+    openReportsModal();
+  });
+
+  document.getElementById('btn-refresh-reports-list')?.addEventListener('click', () => {
+    cyberAudio.click();
+    loadTerminalReports();
   });
 
   document.getElementById('btn-fullscreen-terminal')?.addEventListener('click', () => {
@@ -352,51 +423,114 @@ function initVpsTerminal() {
     toggleTerminalFullscreen();
   });
 
-  // Quick Command Buttons
-  document.getElementById('qcmd-logs')?.addEventListener('click', () => copyToClipboard('journalctl -u ttyd -f'));
-  document.getElementById('qcmd-htop')?.addEventListener('click', () => copyToClipboard('htop'));
-  document.getElementById('qcmd-port')?.addEventListener('click', () => copyToClipboard('ss -tulpn | grep 7681'));
-  document.getElementById('qcmd-restart')?.addEventListener('click', () => copyToClipboard('sudo systemctl restart ttyd.service'));
+  // Quick Command Buttons -> write directly to WebSocket
+  const sendQuickCmd = (cmd) => {
+    if (state.termSocket && state.termSocket.readyState === WebSocket.OPEN) {
+      state.termSocket.send(cmd + '\r');
+      cyberAudio.click();
+    } else {
+      alert('Terminal WebSocket is not connected.');
+    }
+  };
+
+  document.getElementById('qcmd-reports')?.addEventListener('click', () => sendQuickCmd('ls -la /var/log/dashboard-reports'));
+  document.getElementById('qcmd-htop')?.addEventListener('click', () => sendQuickCmd('htop'));
+  document.getElementById('qcmd-port')?.addEventListener('click', () => sendQuickCmd('ss -tulpn | grep 7682'));
+  document.getElementById('qcmd-restart')?.addEventListener('click', () => sendQuickCmd('systemctl status terminal-bridge'));
+
+  // Preload reports count badge
+  loadTerminalReports();
 }
 
-function ensureTerminalLoaded() {
-  const iframe = document.getElementById('vps-terminal-iframe');
-  if (iframe && (!iframe.src || iframe.src === 'about:blank')) {
-    iframe.src = state.vpsTerminalUrl;
+function connectTerminalWebSocket(forceReconnect = false) {
+  if (state.termSocket && (state.termSocket.readyState === WebSocket.OPEN || state.termSocket.readyState === WebSocket.CONNECTING)) {
+    if (!forceReconnect) return;
+    state.termSocket.close();
   }
-}
 
-function setTerminalUrl(url) {
-  state.vpsTerminalUrl = url;
-  localStorage.setItem('vps_terminal_url', url);
-  const iframe = document.getElementById('vps-terminal-iframe');
+  const dot = document.getElementById('terminal-socket-dot');
   const urlLabel = document.getElementById('terminal-current-url-label');
   const hostPill = document.getElementById('terminal-host-pill');
 
-  if (iframe) iframe.src = url;
-  if (urlLabel) urlLabel.textContent = `Target: ${url}`;
+  if (urlLabel) urlLabel.textContent = `Target: ${state.vpsTerminalWsUrl}`;
   if (hostPill) {
     try {
-      const u = new URL(url);
-      hostPill.textContent = u.host || url;
+      const u = new URL(state.vpsTerminalWsUrl);
+      hostPill.textContent = u.host || state.vpsTerminalWsUrl;
     } catch (e) {
-      hostPill.textContent = url;
+      hostPill.textContent = state.vpsTerminalWsUrl;
+    }
+  }
+
+  if (state.term) {
+    state.term.writeln(`\r\n\x1b[36m[*] Connecting to VPS WebSocket: ${state.vpsTerminalWsUrl} ...\x1b[0m`);
+  }
+
+  try {
+    state.termSocket = new WebSocket(state.vpsTerminalWsUrl);
+    
+    state.termSocket.onopen = () => {
+      dot?.classList.remove('offline');
+      if (state.term) {
+        state.term.writeln(`\x1b[32m[+] WebSocket Bridge Connected. Spawning interactive PTY session...\x1b[0m\r\n`);
+        if (state.fitAddon) {
+          state.fitAddon.fit();
+          state.termSocket.send(JSON.stringify({
+            type: 'resize',
+            cols: state.term.cols,
+            rows: state.term.rows
+          }));
+        }
+      }
+    };
+
+    state.termSocket.onmessage = (event) => {
+      if (state.term) {
+        state.term.write(event.data);
+      }
+    };
+
+    state.termSocket.onclose = () => {
+      dot?.classList.add('offline');
+      if (state.term) {
+        state.term.writeln(`\r\n\x1b[33m[-] Terminal session closed / disconnected.\x1b[0m`);
+      }
+      loadTerminalReports();
+    };
+
+    state.termSocket.onerror = (err) => {
+      dot?.classList.add('offline');
+      if (state.term) {
+        state.term.writeln(`\r\n\x1b[31m[!] WebSocket Connection Error. Check if node-pty bridge is running on port 7682.\x1b[0m`);
+      }
+    };
+  } catch (e) {
+    dot?.classList.add('offline');
+    if (state.term) {
+      state.term.writeln(`\r\n\x1b[31m[!] Connection failed: ${e.message}\x1b[0m`);
     }
   }
 }
 
-function configureTerminalUrl() {
-  const current = state.vpsTerminalUrl || 'http://213.199.43.129:7681';
-  const custom = prompt('Enter VPS Web Terminal URL or Endpoint:', current);
-  if (custom !== null && custom.trim()) {
-    setTerminalUrl(custom.trim());
+function ensureTerminalLoaded() {
+  if (!state.term) {
+    initVpsTerminal();
+  } else if (state.fitAddon) {
+    setTimeout(() => state.fitAddon.fit(), 100);
   }
 }
 
-function reloadTerminalIframe() {
-  const iframe = document.getElementById('vps-terminal-iframe');
-  if (iframe) {
-    iframe.src = state.vpsTerminalUrl;
+function setTerminalWsUrl(url) {
+  state.vpsTerminalWsUrl = url;
+  localStorage.setItem('vps_terminal_ws_url', url);
+  connectTerminalWebSocket(true);
+}
+
+function configureTerminalWsUrl() {
+  const current = state.vpsTerminalWsUrl || 'ws://213.199.43.129:7682/ws/terminal';
+  const custom = prompt('Enter VPS Terminal WebSocket URL (e.g. ws://213.199.43.129:7682/ws/terminal or /ws/terminal):', current);
+  if (custom !== null && custom.trim()) {
+    setTerminalWsUrl(custom.trim());
   }
 }
 
@@ -407,8 +541,77 @@ function toggleTerminalFullscreen() {
     panel.classList.toggle('fullscreen');
     const isFs = panel.classList.contains('fullscreen');
     if (btn) btn.textContent = isFs ? '✕ Exit Fullscreen' : '⛶ Fullscreen';
+    if (state.fitAddon) {
+      setTimeout(() => state.fitAddon.fit(), 150);
+    }
   }
 }
+
+// Session Reports API integration
+async function loadTerminalReports() {
+  const badge = document.getElementById('reports-count-badge');
+  try {
+    let httpBase = state.vpsTerminalWsUrl.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://').replace(/\/ws\/terminal\/?$/, '');
+    if (!httpBase.startsWith('http')) httpBase = `${window.location.origin}`;
+    
+    const res = await fetch(`${httpBase}/api/reports`, { headers: { 'Accept': 'application/json' } });
+    if (res.ok) {
+      const reports = await res.json();
+      state.reports = reports || [];
+      if (badge) badge.textContent = state.reports.length;
+      renderReportsList(state.reports);
+      return;
+    }
+  } catch (e) {}
+
+  if (badge) badge.textContent = state.reports.length || '0';
+}
+
+function openReportsModal() {
+  openModal('modal-terminal-reports');
+  loadTerminalReports();
+}
+
+function renderReportsList(reports) {
+  const container = document.getElementById('terminal-reports-list-container');
+  if (!container) return;
+
+  if (!reports || reports.length === 0) {
+    container.innerHTML = `
+      <div style="text-align: center; color: var(--text-dim); padding: 30px;">
+        No persistent terminal session reports recorded yet.
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = reports.map(r => `
+    <div class="report-item-card">
+      <div>
+        <div style="font-family: var(--font-mono); font-size: 13px; font-weight: 700; color: var(--neon-green);">
+          Session #${r.id} <span style="font-size: 11px; color: var(--text-muted); font-weight: 400;">· ${new Date(r.startTime).toLocaleString()}</span>
+        </div>
+        <div style="font-size: 11px; color: var(--text-main); margin-top: 4px;">
+          <strong>Duration:</strong> ${r.durationSeconds}s · <strong>Commands Run:</strong> ${r.commandsCount || (r.commands ? r.commands.length : 0)} · <strong>Total Bytes:</strong> ${r.totalBytes}
+        </div>
+        ${r.commands && r.commands.length > 0 ? `
+          <div style="font-family: var(--font-mono); font-size: 10px; color: var(--cyber-cyan); margin-top: 4px;">
+            Last: <code>${escapeHtml(r.commands[r.commands.length - 1].command)}</code>
+          </div>
+        ` : ''}
+      </div>
+      <div>
+        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 11px;" onclick="viewReportDetails('${r.id}')">View Details</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+window.viewReportDetails = (id) => {
+  const rep = state.reports.find(r => r.id === id);
+  if (!rep) return;
+  alert(`Session #${rep.id} Details:\n\nStart: ${rep.startTime}\nEnd: ${rep.endTime}\nDuration: ${rep.durationSeconds}s\nCommands:\n${(rep.commands || []).map(c => ` - [${c.timestamp.slice(11, 19)}] ${c.command}`).join('\n') || 'None'}`);
+};
 
 window.copyToClipboard = (text) => {
   if (navigator.clipboard) {
