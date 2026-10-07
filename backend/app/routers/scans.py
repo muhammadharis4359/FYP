@@ -2,8 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime
+from typing import Optional, Any
 import json
 import time
+import re
 
 from app.database import get_db, SessionLocal
 from app import models, schemas
@@ -11,6 +13,7 @@ from app.modules.pipeline import run_full_pipeline
 from app.modules.chains import infer_exploit_chains, calculate_target_risk, generate_safe_payload_suggestion, CHAIN_PATTERNS
 
 router = APIRouter()
+
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +450,423 @@ def get_findings(scan_id: int, db: Session = Depends(get_db)):
 @router.get("/scans/{scan_id}/chains", response_model=list[schemas.ExploitChainOut])
 def get_chains(scan_id: int, db: Session = Depends(get_db)):
     return db.query(models.ExploitChain).filter(models.ExploitChain.scan_id == scan_id).all()
+
+
+# ---------------------------------------------------------------------------
+# Telemetry Ingestion Helpers & Endpoints (Approach B & Approach C)
+# ---------------------------------------------------------------------------
+
+ANSI_REGEX = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+def _clean_ansi(text: str) -> str:
+    return ANSI_REGEX.sub('', text) if text else ""
+
+
+def _parse_raw_lines_or_json(raw_text: str) -> list[Any]:
+    cleaned = _clean_ansi(raw_text).strip()
+    if not cleaned:
+        return []
+    
+    # Try as full JSON document
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            if "chains" in parsed and isinstance(parsed["chains"], list):
+                return parsed["chains"]
+            if "findings" in parsed and isinstance(parsed["findings"], list):
+                return parsed["findings"]
+            if "hosts" in parsed and isinstance(parsed["hosts"], list):
+                return parsed["hosts"]
+            if "subdomains" in parsed and isinstance(parsed["subdomains"], list):
+                return parsed["subdomains"]
+            return [parsed]
+    except Exception:
+        pass
+    
+    # Try line-by-line JSONL or plain strings
+    results = []
+    for line in cleaned.splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", "===", "[*]", "[-]")):
+            continue
+        try:
+            results.append(json.loads(line))
+        except Exception:
+            results.append(line)
+    return results
+
+
+def _categorize_endpoint_url(url: str) -> str:
+    low = url.lower()
+    if any(k in low for k in ["login", "token", "oauth", "auth", "signin", "password"]):
+        return "auth"
+    if any(k in low for k in ["admin", "actuator", "dashboard", "manage", "root", "cpanel"]):
+        return "admin"
+    if any(k in low for k in ["upload", "file", "avatar", "attachment", "import"]):
+        return "upload"
+    if any(k in low for k in [".env", ".git", ".bak", ".zip", "backup", "secret", "config", "debug"]):
+        return "sensitive"
+    return "api"
+
+
+@router.get("/api/scans/active", response_model=schemas.ScanOut)
+@router.get("/scans/active", response_model=schemas.ScanOut)
+def get_active_scan(domain: Optional[str] = None, auto_create: bool = False, db: Session = Depends(get_db)):
+    """Finds the most recent active scan (or newest scan) so VPS hook knows which scan to attach to."""
+    query = db.query(models.Scan).join(models.Target)
+    if domain:
+        query = query.filter(models.Target.domain == domain.strip().lower())
+    
+    active = query.filter(models.Scan.status.in_(["queued", "recon_running", "scan_running", "analyzing"])).order_by(models.Scan.id.desc()).first()
+    if not active:
+        active = query.order_by(models.Scan.id.desc()).first()
+    
+    if not active:
+        if auto_create and domain:
+            target = db.query(models.Target).filter(models.Target.domain == domain.strip().lower()).first()
+            if not target:
+                target = models.Target(domain=domain.strip().lower())
+                db.add(target)
+                db.commit()
+                db.refresh(target)
+            active = models.Scan(target_id=target.id, status="scan_running", current_stage="vulnerability_scanning", started_at=datetime.utcnow())
+            db.add(active)
+            db.commit()
+            db.refresh(active)
+        else:
+            raise HTTPException(status_code=404, detail="No active or recent scan found")
+            
+    return active
+
+
+@router.post("/api/scans/{scan_id}/ingest/telemetry", response_model=schemas.TelemetryIngestResponse)
+@router.post("/scans/{scan_id}/ingest/telemetry", response_model=schemas.TelemetryIngestResponse)
+def ingest_scan_telemetry(scan_id: int, payload: schemas.TelemetryIngestRequest, db: Session = Depends(get_db)):
+    """
+    Universal Smart Ingestion Engine for Tool-Native JSON & Agent-Structured Output (Approach B & C).
+    Accepts raw CLI outputs or structured dictionaries, auto-identifies record types, deduplicates,
+    and updates database records and live risk scores.
+    """
+    scan = db.get(models.Scan, scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    target_domain = scan.target.domain if scan.target else "target"
+
+    # Extract records
+    records: list[Any] = []
+    if payload.records is not None:
+        records = payload.records
+    elif payload.raw_output:
+        records = _parse_raw_lines_or_json(payload.raw_output)
+    elif payload.chains is not None:
+        records = payload.chains
+
+    cmd = (payload.command or "").lower()
+    data_type = payload.data_type or "auto"
+
+    # Auto-detect data type based on command or payload
+    if data_type == "auto":
+        if payload.chains is not None:
+            data_type = "exploit_chains"
+        elif any(t in cmd for t in ["subfinder", "amass", "assetfinder"]):
+            data_type = "subdomains"
+        elif "httpx" in cmd:
+            data_type = "live_hosts"
+        elif any(t in cmd for t in ["nuclei", "gitleaks"]):
+            data_type = "findings"
+        elif any(t in cmd for t in ["gau", "wayback", "katana"]):
+            data_type = "endpoints"
+        elif records:
+            first = records[0]
+            if isinstance(first, dict):
+                if any(k in first for k in ["template-id", "template_id"]) or ("info" in first and "severity" in first.get("info", {})):
+                    data_type = "findings"
+                elif any(k in first for k in ["status_code", "status-code", "tech", "technologies"]):
+                    data_type = "live_hosts"
+                elif any(k in first for k in ["steps", "steps_json", "confidence"]):
+                    data_type = "exploit_chains"
+                elif "host" in first or "subdomain" in first:
+                    data_type = "subdomains"
+                elif "url" in first:
+                    data_type = "endpoints"
+            elif isinstance(first, str):
+                if first.startswith("http://") or first.startswith("https://"):
+                    data_type = "endpoints"
+                else:
+                    data_type = "subdomains"
+
+    ingested_counts = {
+        "subdomains": 0,
+        "live_hosts": 0,
+        "endpoints": 0,
+        "findings": 0,
+        "exploit_chains": 0
+    }
+
+    # Ingestion processors
+    if data_type == "subdomains":
+        for r in records:
+            sub = (r.get("host") or r.get("subdomain")) if isinstance(r, dict) else str(r)
+            sub = sub.strip().lower()
+            if not sub or len(sub) < 3 or " " in sub:
+                continue
+            sub = re.sub(r'^https?://', '', sub).split('/')[0].split(':')[0]
+            if "." not in sub:
+                continue
+            
+            existing = db.query(models.Subdomain).filter(
+                models.Subdomain.scan_id == scan_id,
+                models.Subdomain.subdomain == sub
+            ).first()
+            if not existing:
+                tool = payload.source_tool or ("amass" if "amass" in cmd else "subfinder")
+                db.add(models.Subdomain(scan_id=scan_id, subdomain=sub, source_tool=tool))
+                ingested_counts["subdomains"] += 1
+
+    elif data_type == "live_hosts":
+        for r in records:
+            if not isinstance(r, dict):
+                continue
+            url = r.get("url") or r.get("input")
+            if not url or not str(url).startswith("http"):
+                continue
+            url = str(url).strip()
+            status_code = r.get("status_code") or r.get("status-code")
+            title = r.get("title")
+            tech = r.get("tech") or r.get("technologies") or r.get("tech_stack")
+            if isinstance(tech, list):
+                tech_stack = ", ".join(str(t) for t in tech)
+            elif tech:
+                tech_stack = str(tech)
+            else:
+                tech_stack = None
+
+            existing = db.query(models.LiveHost).filter(
+                models.LiveHost.scan_id == scan_id,
+                models.LiveHost.url == url
+            ).first()
+            if not existing:
+                db.add(models.LiveHost(scan_id=scan_id, url=url, status_code=status_code, title=title, tech_stack=tech_stack))
+                ingested_counts["live_hosts"] += 1
+            else:
+                if status_code: existing.status_code = status_code
+                if title: existing.title = title
+                if tech_stack: existing.tech_stack = tech_stack
+
+    elif data_type == "endpoints":
+        for r in records:
+            url = (r.get("url") if isinstance(r, dict) else str(r)).strip()
+            if not url or not url.startswith("http"):
+                continue
+            cat = _categorize_endpoint_url(url)
+            src = payload.source_tool or ("waybackurls" if "wayback" in cmd else "gau")
+            existing = db.query(models.Endpoint).filter(
+                models.Endpoint.scan_id == scan_id,
+                models.Endpoint.url == url
+            ).first()
+            if not existing:
+                db.add(models.Endpoint(scan_id=scan_id, url=url, source=src, category=cat))
+                ingested_counts["endpoints"] += 1
+
+    elif data_type == "findings":
+        for r in records:
+            if not isinstance(r, dict):
+                continue
+            template_id = r.get("template-id") or r.get("template_id") or "vuln-detected"
+            matched_url = r.get("matched-at") or r.get("matched_at") or r.get("url") or r.get("matched_url")
+            if not matched_url:
+                continue
+            matched_url = str(matched_url).strip()
+            info = r.get("info") if isinstance(r.get("info"), dict) else {}
+            name = info.get("name") or r.get("name") or template_id
+            severity = (info.get("severity") or r.get("severity") or "medium").lower()
+            
+            classification = info.get("classification") if isinstance(info.get("classification"), dict) else {}
+            cvss = classification.get("cvss-score") or r.get("cvss_score")
+            if cvss is None:
+                sev_map = {"critical": 9.5, "high": 8.0, "medium": 5.5, "low": 3.0, "info": 0.0}
+                cvss = sev_map.get(severity, 5.0)
+            else:
+                try: cvss = float(cvss)
+                except Exception: cvss = 5.0
+
+            src = payload.source_tool or ("gitleaks" if "gitleaks" in cmd else "nuclei")
+            validity = "informational" if severity in ["info", "unknown"] else "actionable"
+            exploitability = "high" if severity in ["critical", "high"] else ("medium" if severity == "medium" else "low")
+            priority = "P1" if severity == "critical" else ("P2" if severity == "high" else ("P3" if severity == "medium" else "P4"))
+            desc = info.get("description") or r.get("description") or f"Detected via {template_id}"
+            safe_test = generate_safe_payload_suggestion(name, template_id, matched_url)
+
+            existing = db.query(models.Finding).filter(
+                models.Finding.scan_id == scan_id,
+                models.Finding.template_id == template_id,
+                models.Finding.matched_url == matched_url
+            ).first()
+            if existing:
+                existing.duplicate_count = (existing.duplicate_count or 1) + 1
+            else:
+                db.add(models.Finding(
+                    scan_id=scan_id,
+                    matched_url=matched_url,
+                    template_id=template_id,
+                    name=name,
+                    severity=severity,
+                    chain_aware_severity=severity,
+                    cvss_score=round(cvss, 1),
+                    source=src,
+                    validity=validity,
+                    exploitability=exploitability,
+                    risk_score=round(cvss, 1),
+                    priority=priority,
+                    safe_payload_test=safe_test,
+                    duplicate_count=1,
+                    description=desc,
+                    raw_output=json.dumps(r)
+                ))
+                ingested_counts["findings"] += 1
+
+    elif data_type == "exploit_chains":
+        for c in records:
+            if not isinstance(c, dict):
+                continue
+            name = c.get("name")
+            if not name:
+                continue
+            category = c.get("category", "General")
+            severity = (c.get("severity", "medium")).lower()
+            try: cvss = float(c.get("cvss_score", 8.5))
+            except Exception: cvss = 8.5
+            try: confidence = int(c.get("confidence", 85))
+            except Exception: confidence = 85
+            steps = c.get("steps") or c.get("steps_json") or []
+            steps_json = steps if isinstance(steps, str) else json.dumps(steps)
+            impact = c.get("impact", "Multi-stage attack path resulting in system compromise.")
+            remediation = c.get("remediation", "Apply validation filters and patch affected services.")
+            finding_ids = c.get("findings_ids") or c.get("findings_ids_json")
+            findings_ids_json = finding_ids if isinstance(finding_ids, str) else (json.dumps(finding_ids) if finding_ids else None)
+
+            existing = db.query(models.ExploitChain).filter(
+                models.ExploitChain.scan_id == scan_id,
+                models.ExploitChain.name == name
+            ).first()
+            if not existing:
+                db.add(models.ExploitChain(
+                    scan_id=scan_id,
+                    name=name,
+                    category=category,
+                    severity=severity,
+                    cvss_score=cvss,
+                    confidence=confidence,
+                    steps_json=steps_json,
+                    impact=impact,
+                    remediation=remediation,
+                    findings_ids_json=findings_ids_json
+                ))
+                ingested_counts["exploit_chains"] += 1
+
+    # Auto-infer exploit chains if findings were ingested but no chains passed
+    if ingested_counts["findings"] > 0 and ingested_counts["exploit_chains"] == 0:
+        existing_chains_count = db.query(models.ExploitChain).filter(models.ExploitChain.scan_id == scan_id).count()
+        if existing_chains_count == 0:
+            current_findings = db.query(models.Finding).filter(models.Finding.scan_id == scan_id).all()
+            current_eps = db.query(models.Endpoint).filter(models.Endpoint.scan_id == scan_id).all()
+            f_dicts = [{"template_id": f.template_id, "name": f.name, "severity": f.severity, "matched_url": f.matched_url} for f in current_findings]
+            ep_dicts = [{"url": ep.url} for ep in current_eps]
+            auto_inferred = infer_exploit_chains(f_dicts, ep_dicts)
+            for ch in auto_inferred:
+                db.add(models.ExploitChain(
+                    scan_id=scan_id,
+                    name=ch["name"],
+                    category=ch["category"],
+                    severity=ch["severity"],
+                    cvss_score=ch["cvss_score"],
+                    confidence=ch["confidence"],
+                    steps_json=ch["steps_json"],
+                    impact=ch["impact"],
+                    remediation=ch["remediation"],
+                    findings_ids_json=ch["findings_ids_json"]
+                ))
+                ingested_counts["exploit_chains"] += 1
+
+    # Recalculate Scan Metrics & Risk
+    db.flush()
+    all_findings = db.query(models.Finding).filter(models.Finding.scan_id == scan_id).all()
+    all_chains = db.query(models.ExploitChain).filter(models.ExploitChain.scan_id == scan_id).all()
+
+
+    if payload.overall_risk_score is not None:
+        scan.overall_risk_score = float(payload.overall_risk_score)
+        if payload.priority:
+            scan.priority = payload.priority
+    else:
+        findings_dicts = [{"severity": f.severity, "validity": f.validity} for f in all_findings]
+        chains_dicts = [{"severity": c.severity, "confidence": c.confidence} for c in all_chains]
+        metrics = calculate_target_risk(findings_dicts, chains_dicts)
+        scan.overall_risk_score = metrics["overall_risk_score"]
+        scan.priority = metrics["priority"]
+
+    scan.actionable_count = sum(1 for f in all_findings if (f.validity or "").lower() == "actionable")
+    scan.informational_count = sum(1 for f in all_findings if (f.validity or "").lower() == "informational")
+    scan.chains_count = len(all_chains)
+
+    if scan.status in ["queued", "recon_running"]:
+        if ingested_counts["findings"] > 0:
+            scan.status = "scan_running"
+            scan.current_stage = "vulnerability_scanning"
+        elif ingested_counts["live_hosts"] > 0:
+            scan.status = "recon_running"
+            scan.current_stage = "live_host_detection"
+
+    db.commit()
+    db.refresh(scan)
+
+    return schemas.TelemetryIngestResponse(
+        status="ok",
+        scan_id=scan.id,
+        target_domain=target_domain,
+        ingested=ingested_counts,
+        overall_risk_score=scan.overall_risk_score or 0.0,
+        priority=scan.priority or "P4",
+        message=f"Successfully ingested telemetry for Scan #{scan.id}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Direct Batch Ingestion Endpoints (Convenience)
+# ---------------------------------------------------------------------------
+
+@router.post("/scans/{scan_id}/subdomains", response_model=schemas.TelemetryIngestResponse)
+def bulk_create_subdomains(scan_id: int, payload: schemas.SubdomainsBulkCreate, db: Session = Depends(get_db)):
+    req = schemas.TelemetryIngestRequest(data_type="subdomains", source_tool=payload.source_tool, records=[{"host": s} for s in payload.subdomains])
+    return ingest_scan_telemetry(scan_id, req, db)
+
+
+@router.post("/scans/{scan_id}/live-hosts", response_model=schemas.TelemetryIngestResponse)
+def bulk_create_live_hosts(scan_id: int, payload: schemas.LiveHostsBulkCreate, db: Session = Depends(get_db)):
+    req = schemas.TelemetryIngestRequest(data_type="live_hosts", records=payload.hosts)
+    return ingest_scan_telemetry(scan_id, req, db)
+
+
+@router.post("/scans/{scan_id}/endpoints", response_model=schemas.TelemetryIngestResponse)
+def bulk_create_endpoints(scan_id: int, payload: schemas.EndpointsBulkCreate, db: Session = Depends(get_db)):
+    req = schemas.TelemetryIngestRequest(data_type="endpoints", source_tool=payload.source, records=payload.endpoints)
+    return ingest_scan_telemetry(scan_id, req, db)
+
+
+@router.post("/scans/{scan_id}/findings", response_model=schemas.TelemetryIngestResponse)
+def bulk_create_findings(scan_id: int, payload: schemas.FindingsBulkCreate, db: Session = Depends(get_db)):
+    req = schemas.TelemetryIngestRequest(data_type="findings", records=payload.findings)
+    return ingest_scan_telemetry(scan_id, req, db)
+
+
+@router.post("/scans/{scan_id}/chains", response_model=schemas.TelemetryIngestResponse)
+def bulk_create_chains(scan_id: int, payload: schemas.ChainsBulkCreate, db: Session = Depends(get_db)):
+    req = schemas.TelemetryIngestRequest(data_type="exploit_chains", chains=payload.chains, overall_risk_score=payload.overall_risk_score, priority=payload.priority)
+    return ingest_scan_telemetry(scan_id, req, db)
+
 
 
 # ---------------------------------------------------------------------------

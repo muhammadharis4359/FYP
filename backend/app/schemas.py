@@ -139,3 +139,54 @@ class ChatResponse(BaseModel):
     sources_cited: list[str] = []
 
 
+# ---------------------------------------------------------------------------
+# Telemetry Ingestion Schemas (Approach B & Approach C)
+# ---------------------------------------------------------------------------
+
+class TelemetryIngestRequest(BaseModel):
+    command: Optional[str] = None
+    raw_output: Optional[str] = None
+    data_type: Optional[str] = "auto"  # "auto" | "subdomains" | "live_hosts" | "endpoints" | "findings" | "exploit_chains"
+    source_tool: Optional[str] = None
+    domain: Optional[str] = None
+    records: Optional[list[dict]] = None
+    chains: Optional[list[dict]] = None
+    overall_risk_score: Optional[float] = None
+    priority: Optional[str] = None
+
+
+class TelemetryIngestResponse(BaseModel):
+    status: str
+    scan_id: int
+    target_domain: str
+    ingested: dict[str, int]
+    overall_risk_score: float
+    priority: str
+    message: Optional[str] = None
+
+
+class SubdomainsBulkCreate(BaseModel):
+    subdomains: list[str]
+    source_tool: Optional[str] = "subfinder"
+
+
+class LiveHostsBulkCreate(BaseModel):
+    hosts: list[dict]
+
+
+class EndpointsBulkCreate(BaseModel):
+    endpoints: list[dict]
+    source: Optional[str] = "gau"
+
+
+class FindingsBulkCreate(BaseModel):
+    findings: list[dict]
+
+
+class ChainsBulkCreate(BaseModel):
+    chains: list[dict]
+    overall_risk_score: Optional[float] = None
+    priority: Optional[str] = None
+
+
+
